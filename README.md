@@ -46,5 +46,7 @@ The plugin scans for keys like:
 - `public_key`
 - …and many more
 
+## Contribution
 
+Feel free to request features, suggest improvements, or report bugs via GitHub Issues.
 
