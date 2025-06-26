@@ -11,7 +11,6 @@
 - ✅ Classifies findings by **severity**
 - ✅ Logs results in **Caido Findings**
 - ✅ Built for **speed and maintainability**
-- ✅ Extensible — add more keywords easily
 
 ---
 
