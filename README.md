@@ -50,3 +50,12 @@ The plugin scans for keys like:
 
 Feel free to request features, suggest improvements, or report bugs via GitHub Issues.
 
+## About Me
+
+* **DarkLotus** - *CyberSecurity Researcher* - [DarkLotusKDB](https://github.com/darklotuskdb)
+
+### Social Media Handles
+* [Twitter](https://twitter.com/darklotuskdb)
+* [Medium](https://darklotus.medium.com/)
+* [Linkedin](https://www.linkedin.com/in/kamaldeepbhati/)
+* [Instagram](https://www.instagram.com/kamaldeepbhati/)
