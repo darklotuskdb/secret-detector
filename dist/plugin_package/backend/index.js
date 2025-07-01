@@ -48,6 +48,7 @@ function rebuildPatternCache(criticalKeywords = cachedCriticalKeywords) {
   for (const k of criticalKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k) });
   cachedCriticalKeywords = [...criticalKeywords];
 }
+rebuildPatternCache();
 var allFindings = [];
 var toolEnabled = true;
 var excludedExtensions = [];
@@ -131,24 +132,12 @@ function init(sdk) {
     let analyzed = 0;
     let newFindings = 0;
     try {
-      const patterns = [];
-      for (const k of predefinedKeywords) patterns.push({ regex: buildFlexibleRegex(k) });
-      const db = await sdk.meta.db();
-      await db.exec("CREATE TABLE IF NOT EXISTS critical_keywords (keyword TEXT PRIMARY KEY)");
-      const stmt = await db.prepare("SELECT keyword FROM critical_keywords");
-      const rows = await stmt.all();
-      for (const row of rows) {
-        const keyword = row.keyword;
-        if (keyword && typeof keyword === "string" && keyword.trim().length > 0) {
-          patterns.push({ regex: buildFlexibleRegex(keyword) });
-        }
-      }
+      const patterns = cachedPatterns;
       const searchApi = sdk.search;
       if (!searchApi || typeof searchApi.query !== "function") {
         sdk.console.warn("[Secret Detector] Search API is not available in this SDK version.");
         return { summary: "Search API not available in this SDK version." };
       }
-      for (const k of predefinedKeywords) patterns.push({ regex: buildFlexibleRegex(k) });
       for (const { regex } of patterns) {
         let keyword = "";
         if (regex && typeof regex.source === "string") {
@@ -247,18 +236,7 @@ function init(sdk) {
       if (bodyObj && typeof bodyObj.toText === "function") {
         body = await bodyObj.toText();
       }
-      const patterns = [];
-      for (const k of predefinedKeywords) patterns.push({ regex: buildFlexibleRegex(k) });
-      const db = await sdk2.meta.db();
-      await db.exec("CREATE TABLE IF NOT EXISTS critical_keywords (keyword TEXT PRIMARY KEY)");
-      const stmt = await db.prepare("SELECT keyword FROM critical_keywords");
-      const rows = await stmt.all();
-      for (const row of rows) {
-        const keyword = row.keyword;
-        if (keyword && typeof keyword === "string" && keyword.trim().length > 0) {
-          patterns.push({ regex: buildFlexibleRegex(keyword) });
-        }
-      }
+      const patterns = cachedPatterns;
       let found = [];
       for (const { regex } of patterns) {
         const matches = [...body.matchAll(regex)].filter((m) => {

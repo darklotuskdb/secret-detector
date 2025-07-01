@@ -77,6 +77,9 @@ function rebuildPatternCache(criticalKeywords: string[] = cachedCriticalKeywords
   cachedCriticalKeywords = [...criticalKeywords];
 }
 
+// Ensure regex cache is initialized at startup
+rebuildPatternCache();
+
 // (Removed severity toggles, not needed)
 
 // In-memory storage for findings (for export)
@@ -188,22 +191,8 @@ export function init(sdk: SDK<API>) {
     let analyzed = 0;
     let newFindings = 0;
     try {
-      // Prepare patterns (same as in onInterceptResponse)
-      const patterns: SecretPattern[] = [];
-      for (const k of predefinedKeywords) patterns.push({ regex: buildFlexibleRegex(k) });
-      // Fetch critical keywords from SQLite
-      const db = await sdk.meta.db();
-      await db.exec("CREATE TABLE IF NOT EXISTS critical_keywords (keyword TEXT PRIMARY KEY)");
-      const stmt = await db.prepare("SELECT keyword FROM critical_keywords");
-      const rows = await stmt.all();
-      for (const row of rows) {
-        const keyword = (row as { keyword?: string }).keyword;
-        if (keyword && typeof keyword === "string" && keyword.trim().length > 0) {
-          patterns.push({ regex: buildFlexibleRegex(keyword) });
-        }
-      }
-      // Use backend-stored toggles
-      // Removed severity toggles logic
+      // Use cached patterns for performance
+      const patterns: SecretPattern[] = cachedPatterns;
       // Check if search API is available
       const searchApi = (sdk as any).search;
       if (!searchApi || typeof searchApi.query !== "function") {
@@ -211,7 +200,6 @@ export function init(sdk: SDK<API>) {
         return { summary: "Search API not available in this SDK version." };
       }
       // For each pattern, search for hits in HTTP traffic
-      for (const k of predefinedKeywords) patterns.push({ regex: buildFlexibleRegex(k) });
       for (const { regex } of patterns) {
         // Extract the keyword from the regex source (best effort, safe)
         let keyword = "";
@@ -321,22 +309,8 @@ export function init(sdk: SDK<API>) {
         body = await bodyObj.toText();
       }
 
-      // Use in-memory predefined keywords (no severity)
-      const patterns: SecretPattern[] = [];
-      for (const k of predefinedKeywords) patterns.push({ regex: buildFlexibleRegex(k) });
-
-      // Fetch critical keywords from SQLite and add to patterns
-      const db = await sdk.meta.db();
-      await db.exec("CREATE TABLE IF NOT EXISTS critical_keywords (keyword TEXT PRIMARY KEY)");
-      const stmt = await db.prepare("SELECT keyword FROM critical_keywords");
-      const rows = await stmt.all();
-      for (const row of rows) {
-        const keyword = (row as { keyword?: string }).keyword;
-        if (keyword && typeof keyword === "string" && keyword.trim().length > 0) {
-          patterns.push({ regex: buildFlexibleRegex(keyword) });
-        }
-      }
-
+      // Use cached patterns for performance
+      const patterns: SecretPattern[] = cachedPatterns;
       // Collect all matches (no severity)
       let found: string[] = [];
       for (const { regex } of patterns) {
