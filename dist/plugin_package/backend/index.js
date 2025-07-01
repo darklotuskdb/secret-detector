@@ -8,25 +8,30 @@ function buildFlexibleRegex(keyword) {
   );
 }
 var predefinedKeywords = [
+  // Cloud provider keys
   "AWS_SECRET_ACCESS_KEY",
   "AWS_ACCESS_KEY_ID",
   "GCP_API_KEY",
   "AZURE_CLIENT_SECRET",
+  // Generic secrets
   "PRIVATE_KEY",
   "SECRET_KEY",
-  "DATABASE_URL",
-  "SLACK_TOKEN",
-  "GITHUB_TOKEN",
+  "ENCRYPTION_KEY",
   "API_KEY",
-  "PASSWORD",
   "ACCESS_TOKEN",
   "REFRESH_TOKEN",
-  "SESSION_ID",
   "AUTH_TOKEN",
-  "ENCRYPTION_KEY",
+  "SESSION_ID",
+  // Database/credentials
+  "DATABASE_URL",
   "DB_PASSWORD",
   "SMTP_PASSWORD",
   "MAILGUN_API_KEY",
+  // Service tokens
+  "SLACK_TOKEN",
+  "GITHUB_TOKEN",
+  // User info (for demo, can be removed if not needed)
+  "PASSWORD",
   "USERNAME",
   "EMAIL",
   "PHONE_NUMBER",
@@ -35,6 +40,14 @@ var predefinedKeywords = [
   "CITY",
   "COUNTRY"
 ];
+var cachedPatterns = [];
+var cachedCriticalKeywords = [];
+function rebuildPatternCache(criticalKeywords = cachedCriticalKeywords) {
+  cachedPatterns = [];
+  for (const k of predefinedKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k) });
+  for (const k of criticalKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k) });
+  cachedCriticalKeywords = [...criticalKeywords];
+}
 var allFindings = [];
 var toolEnabled = true;
 var excludedExtensions = [];
@@ -78,12 +91,14 @@ function init(sdk) {
         await stmt.run(kw);
       }
     }
+    rebuildPatternCache(keywords);
     return true;
   });
   sdk.api.register("setPredefinedKeywords", async (_sdk, keywords) => {
     if (Array.isArray(keywords) && keywords.length > 0) {
       predefinedKeywords = Array.from(/* @__PURE__ */ new Set([...predefinedKeywords, ...keywords]));
       sdk.console.log(`[Secret Detector] Predefined keywords updated: count=${predefinedKeywords.length}`);
+      rebuildPatternCache(cachedCriticalKeywords);
     }
     return true;
   });

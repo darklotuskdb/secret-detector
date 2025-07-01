@@ -34,25 +34,30 @@ function buildFlexibleRegex(keyword: string): RegExp {
 
 // In-memory storage for all predefined keywords (no severity)
 let predefinedKeywords: string[] = [
+  // Cloud provider keys
   "AWS_SECRET_ACCESS_KEY",
   "AWS_ACCESS_KEY_ID",
   "GCP_API_KEY",
   "AZURE_CLIENT_SECRET",
+  // Generic secrets
   "PRIVATE_KEY",
   "SECRET_KEY",
-  "DATABASE_URL",
-  "SLACK_TOKEN",
-  "GITHUB_TOKEN",
+  "ENCRYPTION_KEY",
   "API_KEY",
-  "PASSWORD",
   "ACCESS_TOKEN",
   "REFRESH_TOKEN",
-  "SESSION_ID",
   "AUTH_TOKEN",
-  "ENCRYPTION_KEY",
+  "SESSION_ID",
+  // Database/credentials
+  "DATABASE_URL",
   "DB_PASSWORD",
   "SMTP_PASSWORD",
   "MAILGUN_API_KEY",
+  // Service tokens
+  "SLACK_TOKEN",
+  "GITHUB_TOKEN",
+  // User info (for demo, can be removed if not needed)
+  "PASSWORD",
   "USERNAME",
   "EMAIL",
   "PHONE_NUMBER",
@@ -61,6 +66,16 @@ let predefinedKeywords: string[] = [
   "CITY",
   "COUNTRY"
 ];
+
+// In-memory cache for regex patterns (predefined + critical)
+let cachedPatterns: SecretPattern[] = [];
+let cachedCriticalKeywords: string[] = [];
+function rebuildPatternCache(criticalKeywords: string[] = cachedCriticalKeywords) {
+  cachedPatterns = [];
+  for (const k of predefinedKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k) });
+  for (const k of criticalKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k) });
+  cachedCriticalKeywords = [...criticalKeywords];
+}
 
 // (Removed severity toggles, not needed)
 
@@ -119,6 +134,8 @@ export function init(sdk: SDK<API>) {
         await stmt.run(kw);
       }
     }
+    // Rebuild pattern cache with new critical keywords
+    rebuildPatternCache(keywords);
     return true;
   });
 
@@ -129,6 +146,8 @@ export function init(sdk: SDK<API>) {
       predefinedKeywords = Array.from(new Set([...predefinedKeywords, ...keywords]));
       // Store in-memory only (no DB), so will reset on restart
       sdk.console.log(`[Secret Detector] Predefined keywords updated: count=${predefinedKeywords.length}`);
+      // Rebuild pattern cache with current critical keywords
+      rebuildPatternCache(cachedCriticalKeywords);
     }
     return true;
   });
@@ -234,7 +253,7 @@ export function init(sdk: SDK<API>) {
             // Run the regex pattern on the body
             const matches = [...body.matchAll(regex)].filter(m => {
               // m[0] is the full match, m[1] is undefined unless regex has groups
-              // Extract the value after := or =
+              // Extract the value after := or =,
               const match = m[0];
               // Try to extract the value part (after := or = and quotes)
               const valueMatch = match.match(/[:=]\s*['\"]([^'\"]+)['\"]/);
