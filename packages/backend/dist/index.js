@@ -7,17 +7,34 @@ function buildFlexibleRegex(keyword) {
     "gi"
   );
 }
-var predefinedKeywords = {
-  high: [],
-  medium: [],
-  low: []
-};
-var severityToggles = {
-  high: true,
-  medium: true,
-  low: true,
-  critical: true
-};
+var predefinedKeywords = [
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_ACCESS_KEY_ID",
+  "GCP_API_KEY",
+  "AZURE_CLIENT_SECRET",
+  "PRIVATE_KEY",
+  "SECRET_KEY",
+  "DATABASE_URL",
+  "SLACK_TOKEN",
+  "GITHUB_TOKEN",
+  "API_KEY",
+  "PASSWORD",
+  "ACCESS_TOKEN",
+  "REFRESH_TOKEN",
+  "SESSION_ID",
+  "AUTH_TOKEN",
+  "ENCRYPTION_KEY",
+  "DB_PASSWORD",
+  "SMTP_PASSWORD",
+  "MAILGUN_API_KEY",
+  "USERNAME",
+  "EMAIL",
+  "PHONE_NUMBER",
+  "ADDRESS",
+  "ZIP_CODE",
+  "CITY",
+  "COUNTRY"
+];
 var allFindings = [];
 var toolEnabled = true;
 var excludedExtensions = [];
@@ -40,6 +57,9 @@ async function saveExcludedExtensions(sdk) {
   }
 }
 function init(sdk) {
+  sdk.api.register("getPredefinedKeywords", async () => {
+    return predefinedKeywords;
+  });
   loadExcludedExtensions(sdk);
   sdk.api.register("getCriticalKeywords", async () => {
     const db = await sdk.meta.db();
@@ -60,51 +80,33 @@ function init(sdk) {
     }
     return true;
   });
-  sdk.api.register("setPredefinedKeywords", async (_sdk, payload) => {
-    predefinedKeywords.high = Array.isArray(payload.high) ? payload.high : [];
-    predefinedKeywords.medium = Array.isArray(payload.medium) ? payload.medium : [];
-    predefinedKeywords.low = Array.isArray(payload.low) ? payload.low : [];
-    sdk.console.log(`[Secret Detector] Predefined keywords updated: high=${predefinedKeywords.high.length}, medium=${predefinedKeywords.medium.length}, low=${predefinedKeywords.low.length}`);
+  sdk.api.register("setPredefinedKeywords", async (_sdk, keywords) => {
+    if (Array.isArray(keywords) && keywords.length > 0) {
+      predefinedKeywords = Array.from(/* @__PURE__ */ new Set([...predefinedKeywords, ...keywords]));
+      sdk.console.log(`[Secret Detector] Predefined keywords updated: count=${predefinedKeywords.length}`);
+    }
     return true;
-  });
-  sdk.api.register("setSeverityToggles", async (_sdk, toggles) => {
-    severityToggles = { ...severityToggles, ...toggles };
-    sdk.console.log(`[Secret Detector] Severity toggles updated: ${JSON.stringify(severityToggles)}`);
-    return true;
-  });
-  sdk.api.register("getSeverityToggles", async () => {
-    return severityToggles;
   });
   sdk.api.register("getAllFindings", async () => {
     return allFindings;
   });
   sdk.api.register("getKeywordStats", async () => {
-    const severityCounts = { critical: 0, high: 0, medium: 0, low: 0 };
-    const keywordSeverityMap = {};
+    const keywordCounts = {};
     for (const finding of allFindings) {
-      if (finding.severity && typeof finding.severity === "string" && severityCounts.hasOwnProperty(finding.severity)) {
-        severityCounts[finding.severity]++;
-      }
-      if (Array.isArray(finding.items) && finding.severity) {
+      if (Array.isArray(finding.items)) {
         for (const kw of finding.items) {
           if (typeof kw === "string") {
-            if (!keywordSeverityMap[kw]) keywordSeverityMap[kw] = { high: 0, medium: 0, low: 0, critical: 0 };
-            keywordSeverityMap[kw][finding.severity] = (keywordSeverityMap[kw][finding.severity] || 0) + 1;
+            keywordCounts[kw] = (keywordCounts[kw] || 0) + 1;
           }
         }
       }
     }
     const keywords = [];
-    for (const [kw, sevMap] of Object.entries(keywordSeverityMap)) {
-      for (const sev of ["critical", "high", "medium", "low"]) {
-        const count = sevMap[sev] ?? 0;
-        if (count > 0) {
-          keywords.push({ keyword: kw, count, severity: sev });
-        }
-      }
+    for (const [kw, count] of Object.entries(keywordCounts)) {
+      keywords.push({ keyword: kw, count });
     }
     keywords.sort((a, b) => b.count - a.count);
-    return { stats: severityCounts, keywords };
+    return { stats: {}, keywords };
   });
   sdk.api.register("setToolEnabled", async (_sdk, enabled) => {
     toolEnabled = !!enabled;
@@ -115,9 +117,7 @@ function init(sdk) {
     let newFindings = 0;
     try {
       const patterns = [];
-      for (const k of predefinedKeywords.high) patterns.push({ regex: buildFlexibleRegex(k), severity: "high" });
-      for (const k of predefinedKeywords.medium) patterns.push({ regex: buildFlexibleRegex(k), severity: "medium" });
-      for (const k of predefinedKeywords.low) patterns.push({ regex: buildFlexibleRegex(k), severity: "low" });
+      for (const k of predefinedKeywords) patterns.push({ regex: buildFlexibleRegex(k) });
       const db = await sdk.meta.db();
       await db.exec("CREATE TABLE IF NOT EXISTS critical_keywords (keyword TEXT PRIMARY KEY)");
       const stmt = await db.prepare("SELECT keyword FROM critical_keywords");
@@ -125,17 +125,16 @@ function init(sdk) {
       for (const row of rows) {
         const keyword = row.keyword;
         if (keyword && typeof keyword === "string" && keyword.trim().length > 0) {
-          patterns.push({ regex: buildFlexibleRegex(keyword), severity: "critical" });
+          patterns.push({ regex: buildFlexibleRegex(keyword) });
         }
       }
-      let enabledSeverities = { ...severityToggles };
       const searchApi = sdk.search;
       if (!searchApi || typeof searchApi.query !== "function") {
         sdk.console.warn("[Secret Detector] Search API is not available in this SDK version.");
         return { summary: "Search API not available in this SDK version." };
       }
-      for (const { regex, severity } of patterns) {
-        if (!enabledSeverities[severity]) continue;
+      for (const k of predefinedKeywords) patterns.push({ regex: buildFlexibleRegex(k) });
+      for (const { regex } of patterns) {
         let keyword = "";
         if (regex && typeof regex.source === "string") {
           const split = regex.source.split("\\s*");
@@ -178,14 +177,13 @@ function init(sdk) {
             if (matches.length > 0) {
               const items = matches.map((m) => m[0]);
               const finding = {
-                title: `[${severity.toUpperCase()}] Hardcoded Secrets Found!!`,
-                description: `Potential ${severity}-severity secrets found in response from ${req.getUrl()} (search scan):
+                title: `[SECRETS] Hardcoded Secrets Found!!`,
+                description: `Potential secrets found in response from ${req.getUrl()} (search scan):
 
 ` + items.map((v, i) => `${i + 1}. ${v}`).join("\n"),
                 reporter: "Secret Detector",
-                dedupeKey: `${req.getUrl()}-secret-${severity}-search`,
+                dedupeKey: `${req.getUrl()}-secret-search`,
                 request: req,
-                severity,
                 items,
                 url: req.getUrl(),
                 timestamp: Date.now()
@@ -224,56 +222,38 @@ function init(sdk) {
           return;
         }
       }
-      let enabledSeverities = { ...severityToggles };
       const bodyObj = await response.getBody();
       let body = "";
       if (bodyObj && typeof bodyObj.toText === "function") {
         body = await bodyObj.toText();
       }
       const patterns = [];
-      for (const k of predefinedKeywords.high) patterns.push({ regex: buildFlexibleRegex(k), severity: "high" });
-      for (const k of predefinedKeywords.medium) patterns.push({ regex: buildFlexibleRegex(k), severity: "medium" });
-      for (const k of predefinedKeywords.low) patterns.push({ regex: buildFlexibleRegex(k), severity: "low" });
+      for (const k of predefinedKeywords) patterns.push({ regex: buildFlexibleRegex(k) });
       const db = await sdk2.meta.db();
       await db.exec("CREATE TABLE IF NOT EXISTS critical_keywords (keyword TEXT PRIMARY KEY)");
       const stmt = await db.prepare("SELECT keyword FROM critical_keywords");
       const rows = await stmt.all();
-      const loadedCritical = [];
       for (const row of rows) {
         const keyword = row.keyword;
         if (keyword && typeof keyword === "string" && keyword.trim().length > 0) {
-          patterns.push({
-            regex: buildFlexibleRegex(keyword),
-            severity: "critical"
-          });
-          loadedCritical.push(keyword);
+          patterns.push({ regex: buildFlexibleRegex(keyword) });
         }
       }
-      sdk2.console.log(`[Secret Detector] Loaded critical keywords: ${JSON.stringify(loadedCritical)}`);
-      const matchesBySeverity = {
-        low: [],
-        medium: [],
-        high: [],
-        critical: []
-      };
-      for (const { regex, severity } of patterns) {
+      let found = [];
+      for (const { regex } of patterns) {
         const matches = [...body.matchAll(regex)];
-        for (const m of matches) matchesBySeverity[severity].push(m[0]);
+        for (const m of matches) found.push(m[0]);
       }
-      for (const severity of ["high", "medium", "low", "critical"]) {
-        if (!enabledSeverities[severity]) continue;
-        const items = matchesBySeverity[severity];
-        if (items.length === 0) continue;
+      if (found.length > 0) {
         const finding = {
-          title: `[${severity.toUpperCase()}] Hardcoded Secrets Found!!`,
-          description: `Potential ${severity}-severity secrets found in response from ${request.getUrl()} (live scan):
+          title: `[SECRETS] Hardcoded Secrets Found!!`,
+          description: `Potential secrets found in response from ${request.getUrl()} (live scan):
 
-` + items.map((v, i) => `${i + 1}. ${v}`).join("\n"),
+` + found.map((v, i) => `${i + 1}. ${v}`).join("\n"),
           reporter: "Secret Detector",
-          dedupeKey: `${request.getUrl()}-secret-${severity}-live`,
+          dedupeKey: `${request.getUrl()}-secret-live`,
           request,
-          severity,
-          items,
+          items: found,
           url: request.getUrl(),
           timestamp: Date.now()
         };

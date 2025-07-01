@@ -3,7 +3,6 @@ import TabView from "primevue/tabview";
 import TabPanel from "primevue/tabpanel";
 import TabKeywords from "./TabKeywords.vue";
 import TabManageKeywords from "./TabManageKeywords.vue";
-import TabSeverity from "./TabSeverity.vue";
 import TabBulk from "./TabBulk.vue";
 import TabStats from "./TabStats.vue";
 import TabAdvanced from "./TabAdvanced.vue";
@@ -14,42 +13,16 @@ import { useSDK } from "@/plugins/sdk";
 
 const sdk = useSDK();
 
-const keywordUrls = {
-  high: "https://raw.githubusercontent.com/darklotuskdb/secret-detector/main/keywords/high.txt",
-  medium: "https://raw.githubusercontent.com/darklotuskdb/secret-detector/main/keywords/medium.txt",
-  low: "https://raw.githubusercontent.com/darklotuskdb/secret-detector/main/keywords/low.txt",
-};
-
 const loading = ref(false);
 const error = ref("");
-const keywordCounts = ref({ high: 0, medium: 0, low: 0 });
-
-async function fetchRemoteKeywords(url: string): Promise<string[]> {
-  try {
-    const resp = await fetch(url);
-    if (!resp.ok) return [];
-    const text = await resp.text();
-    return text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-  } catch {
-    return [];
-  }
-}
+const keywordCount = ref(0);
 
 async function syncPredefinedKeywords() {
   loading.value = true;
   error.value = "";
   try {
-    const [high, medium, low] = await Promise.all([
-      fetchRemoteKeywords(keywordUrls.high),
-      fetchRemoteKeywords(keywordUrls.medium),
-      fetchRemoteKeywords(keywordUrls.low),
-    ]);
-    await sdk.backend.setPredefinedKeywords({ high, medium, low });
-    keywordCounts.value = {
-      high: high.length,
-      medium: medium.length,
-      low: low.length,
-    };
+    const keywords = await sdk.backend.getPredefinedKeywords();
+    keywordCount.value = keywords.length;
   } catch (e) {
     error.value = "Failed to load predefined keywords.";
   } finally {
@@ -69,11 +42,7 @@ onMounted(() => {
       <div class="flex items-center gap-4 mt-2">
         <Button label="Refresh Predefined Keywords" :loading="loading" @click="syncPredefinedKeywords" size="small" />
         <span v-if="!loading" class="text-gray-700 text-sm">
-          <span>High: <b>{{ keywordCounts.high }}</b></span>
-          <span class="mx-2">|</span>
-          <span>Medium: <b>{{ keywordCounts.medium }}</b></span>
-          <span class="mx-2">|</span>
-          <span>Low: <b>{{ keywordCounts.low }}</b></span>
+          <span>Total Keywords: <b>{{ keywordCount }}</b></span>
         </span>
         <span v-if="error" class="text-red-500 text-xs ml-2">{{ error }}</span>
       </div>
@@ -86,9 +55,7 @@ onMounted(() => {
         <TabPanel header="Manage Keywords">
           <TabManageKeywords />
         </TabPanel>
-        <TabPanel header="Severity Customization">
-          <TabSeverity />
-        </TabPanel>
+        <!-- Removed Severity Customization Tab -->
         <TabPanel header="Export">
           <TabBulk />
         </TabPanel>
