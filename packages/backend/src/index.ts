@@ -232,7 +232,15 @@ export function init(sdk: SDK<API>) {
               }
             } catch {}
             // Run the regex pattern on the body
-            const matches = [...body.matchAll(regex)];
+            const matches = [...body.matchAll(regex)].filter(m => {
+              // m[0] is the full match, m[1] is undefined unless regex has groups
+              // Extract the value after := or =
+              const match = m[0];
+              // Try to extract the value part (after := or = and quotes)
+              const valueMatch = match.match(/[:=]\s*['\"]([^'\"]+)['\"]/);
+              if (valueMatch && valueMatch[1] && valueMatch[1].length > 5) return true;
+              return false;
+            });
             if (matches.length > 0) {
               const items = matches.map(m => m[0]);
               const finding = {
@@ -313,7 +321,12 @@ export function init(sdk: SDK<API>) {
       // Collect all matches (no severity)
       let found: string[] = [];
       for (const { regex } of patterns) {
-        const matches = [...body.matchAll(regex)];
+        const matches = [...body.matchAll(regex)].filter(m => {
+          const match = m[0];
+          const valueMatch = match.match(/[:=]\s*['\"]([^'\"]+)['\"]/);
+          if (valueMatch && valueMatch[1] && valueMatch[1].length > 5) return true;
+          return false;
+        });
         for (const m of matches) found.push(m[0]);
       }
       if (found.length > 0) {

@@ -173,7 +173,12 @@ function init(sdk) {
               }
             } catch {
             }
-            const matches = [...body.matchAll(regex)];
+            const matches = [...body.matchAll(regex)].filter((m) => {
+              const match = m[0];
+              const valueMatch = match.match(/[:=]\s*['\"]([^'\"]+)['\"]/);
+              if (valueMatch && valueMatch[1] && valueMatch[1].length > 5) return true;
+              return false;
+            });
             if (matches.length > 0) {
               const items = matches.map((m) => m[0]);
               const finding = {
@@ -241,7 +246,12 @@ function init(sdk) {
       }
       let found = [];
       for (const { regex } of patterns) {
-        const matches = [...body.matchAll(regex)];
+        const matches = [...body.matchAll(regex)].filter((m) => {
+          const match = m[0];
+          const valueMatch = match.match(/[:=]\s*['\"]([^'\"]+)['\"]/);
+          if (valueMatch && valueMatch[1] && valueMatch[1].length > 5) return true;
+          return false;
+        });
         for (const m of matches) found.push(m[0]);
       }
       if (found.length > 0) {
