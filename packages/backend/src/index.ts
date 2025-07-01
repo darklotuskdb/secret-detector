@@ -1,0 +1,370 @@
+import type { DefineAPI, SDK } from "caido:plugin";
+import type { Request, Response } from "caido:utils";
+
+export type API = DefineAPI<{
+  getCriticalKeywords: () => Promise<string[]>;
+  setCriticalKeywords: (keywords: string[]) => Promise<boolean>;
+  setPredefinedKeywords: (payload: {
+    high: string[];
+    medium: string[];
+    low: string[];
+  }) => Promise<boolean>;
+  setSeverityToggles: (toggles: Record<string, boolean>) => Promise<boolean>;
+  getSeverityToggles: () => Promise<Record<string, boolean>>;
+  getAllFindings: () => Promise<any[]>; // Add this line
+  getKeywordStats: () => Promise<{ stats: Record<string, number>; keywords: Array<{ keyword: string; count: number; severity: string }> }>;
+  setToolEnabled: (enabled: boolean) => Promise<boolean>;
+  analyzeHttpHistory: () => Promise<{ summary: string }>;
+  getExcludedExtensions: () => Promise<string[]>;
+  setExcludedExtensions: (exts: string[]) => Promise<boolean>;
+}>;
+
+type SecretPattern = {
+  regex: RegExp;
+  severity: "low" | "medium" | "high" | "critical";
+};
+
+// Helper to build a flexible regex for a keyword
+function buildFlexibleRegex(keyword: string): RegExp {
+  // Replace _ with [_\-\s] to match _, -, or space
+  // Escape all regex special chars except _
+  const escaped = keyword.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+  const flexible = escaped.replace(/_/g, "[_\-\\s]");
+  // Match key optionally surrounded by spaces, then :=, then quoted value
+  return new RegExp(
+    `${flexible}\\s*[:=]\\s*['\"][^'\"]+['\"]`,
+    "gi"
+  );
+}
+
+// In-memory storage for predefined keywords
+const predefinedKeywords: {
+  high: string[];
+  medium: string[];
+  low: string[];
+} = {
+  high: [],
+  medium: [],
+  low: [],
+};
+
+// In-memory storage for severity toggles
+let severityToggles: Record<string, boolean> = {
+  high: true,
+  medium: true,
+  low: true,
+  critical: true,
+};
+
+// In-memory storage for findings (for export)
+let allFindings: any[] = [];
+
+// Global toggle for enabling/disabling the tool
+let toolEnabled = true;
+
+// In-memory storage for excluded file extensions (e.g., [".png", ".jpg"])
+let excludedExtensions: string[] = [];
+
+// Helper to load/save excluded extensions from SQLite
+async function loadExcludedExtensions(sdk: SDK<API>) {
+  const db = await sdk.meta.db();
+  await db.exec("CREATE TABLE IF NOT EXISTS excluded_extensions (ext TEXT PRIMARY KEY)");
+  const stmt = await db.prepare("SELECT ext FROM excluded_extensions");
+  const rows = await stmt.all();
+  excludedExtensions = rows.map((r: any) => r.ext);
+}
+async function saveExcludedExtensions(sdk: SDK<API>) {
+  const db = await sdk.meta.db();
+  await db.exec("CREATE TABLE IF NOT EXISTS excluded_extensions (ext TEXT PRIMARY KEY)");
+  await db.exec("DELETE FROM excluded_extensions");
+  for (const ext of excludedExtensions) {
+    if (ext && typeof ext === "string") {
+      const stmt = await db.prepare("INSERT OR IGNORE INTO excluded_extensions (ext) VALUES (?)");
+      await stmt.run(ext);
+    }
+  }
+}
+
+export function init(sdk: SDK<API>) {
+  // Load excluded extensions on startup
+  loadExcludedExtensions(sdk);
+
+  // Register backend API for frontend to get/set critical keywords
+  sdk.api.register("getCriticalKeywords", async () => {
+    const db = await sdk.meta.db();
+    await db.exec("CREATE TABLE IF NOT EXISTS critical_keywords (keyword TEXT PRIMARY KEY)");
+    const stmt = await db.prepare("SELECT keyword FROM critical_keywords");
+    const rows = await stmt.all();
+    return rows.map((r: any) => r.keyword);
+  });
+  sdk.api.register("setCriticalKeywords", async (_sdk, keywords: string[]) => {
+    const db = await sdk.meta.db();
+    await db.exec("CREATE TABLE IF NOT EXISTS critical_keywords (keyword TEXT PRIMARY KEY)");
+    await db.exec("DELETE FROM critical_keywords");
+    for (const kw of keywords) {
+      if (kw && typeof kw === "string") {
+        const stmt = await db.prepare("INSERT OR IGNORE INTO critical_keywords (keyword) VALUES (?)");
+        await stmt.run(kw);
+      }
+    }
+    return true;
+  });
+
+  // Register API to set predefined keywords (from frontend)
+  sdk.api.register("setPredefinedKeywords", async (_sdk, payload: { high: string[]; medium: string[]; low: string[] }) => {
+    predefinedKeywords.high = Array.isArray(payload.high) ? payload.high : [];
+    predefinedKeywords.medium = Array.isArray(payload.medium) ? payload.medium : [];
+    predefinedKeywords.low = Array.isArray(payload.low) ? payload.low : [];
+    sdk.console.log(`[Secret Detector] Predefined keywords updated: high=${predefinedKeywords.high.length}, medium=${predefinedKeywords.medium.length}, low=${predefinedKeywords.low.length}`);
+    return true;
+  });
+  sdk.api.register("setSeverityToggles", async (_sdk, toggles: Record<string, boolean>) => {
+    severityToggles = { ...severityToggles, ...toggles };
+    sdk.console.log(`[Secret Detector] Severity toggles updated: ${JSON.stringify(severityToggles)}`);
+    return true;
+  });
+  sdk.api.register("getSeverityToggles", async () => {
+    return severityToggles;
+  });
+  sdk.api.register("getAllFindings", async () => {
+    return allFindings;
+  });
+  sdk.api.register("getKeywordStats", async () => {
+    // Count findings by severity
+    const severityCounts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+    // Map: { [keyword]: { [severity]: count } }
+    const keywordSeverityMap: Record<string, Record<string, number>> = {};
+    for (const finding of allFindings) {
+      if (finding.severity && typeof finding.severity === "string" && severityCounts.hasOwnProperty(finding.severity)) {
+        severityCounts[finding.severity]!++;
+      }
+      if (Array.isArray(finding.items) && finding.severity) {
+        for (const kw of finding.items) {
+          if (typeof kw === "string") {
+            if (!keywordSeverityMap[kw]) keywordSeverityMap[kw] = { high: 0, medium: 0, low: 0, critical: 0 };
+            keywordSeverityMap[kw][finding.severity] = (keywordSeverityMap[kw][finding.severity] || 0) + 1;
+          }
+        }
+      }
+    }
+    // Flatten to array: { keyword, count, severity }
+    const keywords: { keyword: string; count: number; severity: string }[] = [];
+    for (const [kw, sevMap] of Object.entries(keywordSeverityMap)) {
+      for (const sev of ["critical", "high", "medium", "low"]) {
+        const count = sevMap[sev] ?? 0;
+        if (count > 0) {
+          keywords.push({ keyword: kw, count, severity: sev });
+        }
+      }
+    }
+    // Sort by count descending
+    keywords.sort((a, b) => b.count - a.count);
+    return { stats: severityCounts, keywords };
+  });
+
+  // Register API to enable/disable the tool
+  sdk.api.register("setToolEnabled", async (_sdk, enabled: boolean) => {
+    toolEnabled = !!enabled;
+    return true;
+  });
+
+  // Register API to analyze past HTTP history
+  sdk.api.register("analyzeHttpHistory", async () => {
+    // Use Caido's search/filtering API to scan for secrets in past HTTP traffic
+    let analyzed = 0;
+    let newFindings = 0;
+    try {
+      // Prepare patterns (same as in onInterceptResponse)
+      const patterns: SecretPattern[] = [];
+      for (const k of predefinedKeywords.high) patterns.push({ regex: buildFlexibleRegex(k), severity: "high" });
+      for (const k of predefinedKeywords.medium) patterns.push({ regex: buildFlexibleRegex(k), severity: "medium" });
+      for (const k of predefinedKeywords.low) patterns.push({ regex: buildFlexibleRegex(k), severity: "low" });
+      // Fetch critical keywords from SQLite
+      const db = await sdk.meta.db();
+      await db.exec("CREATE TABLE IF NOT EXISTS critical_keywords (keyword TEXT PRIMARY KEY)");
+      const stmt = await db.prepare("SELECT keyword FROM critical_keywords");
+      const rows = await stmt.all();
+      for (const row of rows) {
+        const keyword = (row as { keyword?: string }).keyword;
+        if (keyword && typeof keyword === "string" && keyword.trim().length > 0) {
+          patterns.push({ regex: buildFlexibleRegex(keyword), severity: "critical" });
+        }
+      }
+      // Use backend-stored toggles
+      let enabledSeverities = { ...severityToggles };
+      // Check if search API is available
+      const searchApi = (sdk as any).search;
+      if (!searchApi || typeof searchApi.query !== "function") {
+        sdk.console.warn("[Secret Detector] Search API is not available in this SDK version.");
+        return { summary: "Search API not available in this SDK version." };
+      }
+      // For each pattern, search for hits in HTTP traffic
+      for (const { regex, severity } of patterns) {
+        // Only search for enabled severities
+        if (!enabledSeverities[severity]) continue;
+        // Extract the keyword from the regex source (best effort, safe)
+        let keyword = "";
+        if (regex && typeof regex.source === "string") {
+          const split = regex.source.split("\\s*");
+          keyword = (split && split[0]) ? split[0].replace(/[\[\]\\]/g, "") : "";
+        }
+        if (!keyword) continue;
+        // Search using the SDK's search API
+        let results: any[] = [];
+        try {
+          results = await searchApi.query({
+            query: keyword,
+            type: "response", // or "body" if supported
+            limit: 1000, // limit to avoid overload
+          });
+        } catch (err) {
+          sdk.console.warn(`[Secret Detector] Search API error for keyword '${keyword}': ${err}`);
+          continue;
+        }
+        for (const hit of results) {
+          analyzed++;
+          // Defensive: ensure hit has request/response
+          if (!hit || !hit.requestId) continue;
+          try {
+            // Fetch the request/response by ID using safe access
+            const httpAny = (sdk as any).http;
+            if (!httpAny || typeof httpAny.getRequest !== "function" || typeof httpAny.getResponse !== "function") { continue; }
+            const req = await httpAny.getRequest(hit.requestId);
+            const res = await httpAny.getResponse(hit.requestId);
+            if (!req || !res) continue;
+            let body = "";
+            try {
+              const bodyObj = await res.getBody();
+              if (bodyObj && typeof bodyObj.toText === "function") {
+                body = await bodyObj.toText();
+              }
+            } catch {}
+            // Run the regex pattern on the body
+            const matches = [...body.matchAll(regex)];
+            if (matches.length > 0) {
+              const items = matches.map(m => m[0]);
+              const finding = {
+                title: `[${severity.toUpperCase()}] Hardcoded Secrets Found!!`,
+                description:
+                  `Potential ${severity}-severity secrets found in response from ${req.getUrl()} (search scan):\n\n` +
+                  items.map((v, i) => `${i + 1}. ${v}`).join("\n"),
+                reporter: "Secret Detector",
+                dedupeKey: `${req.getUrl()}-secret-${severity}-search`,
+                request: req,
+                severity,
+                items,
+                url: req.getUrl(),
+                timestamp: Date.now(),
+              };
+              allFindings.push(finding);
+              await sdk.findings.create(finding);
+              newFindings++;
+            }
+          } catch (err) {
+            sdk.console.warn(`[Secret Detector] Error processing search hit: ${err}`);
+          }
+        }
+      }
+      return { summary: `Analyzed ${analyzed} search hits. Created ${newFindings} new findings.` };
+    } catch (err) {
+      sdk.console.warn(`[Secret Detector] Error analyzing HTTP history via search: ${err}`);
+      return { summary: `Error analyzing HTTP history via search: ${err}` };
+    }
+  });
+
+  // Register API to get/set excluded extensions
+  sdk.api.register("getExcludedExtensions", async () => {
+    await loadExcludedExtensions(sdk);
+    return excludedExtensions;
+  });
+  sdk.api.register("setExcludedExtensions", async (_sdk, exts: string[]) => {
+    // Normalize: trim, lowercase, ensure starts with .
+    excludedExtensions = (exts || [])
+      .map(e => (typeof e === "string" ? e.trim().toLowerCase() : ""))
+      .filter(e => e.length > 0)
+      .map(e => (e.startsWith(".") ? e : "." + e));
+    await saveExcludedExtensions(sdk);
+    return true;
+  });
+
+  sdk.events.onInterceptResponse(async (sdk: SDK<API>, request: Request, response: Response) => {
+    try {
+      if (!toolEnabled) return;
+      // Exclude requests with excluded extensions
+      const rawUrl = request.getUrl && typeof request.getUrl === "function" ? request.getUrl() : "";
+      const url = typeof rawUrl === "string" ? rawUrl.toLowerCase().split("?")[0] : "";
+      for (const ext of excludedExtensions) {
+        if (url && url.endsWith(ext)) { return; }
+      }
+
+      // Use backend-stored toggles
+      let enabledSeverities = { ...severityToggles };
+
+      const bodyObj = await response.getBody();
+      let body: string = "";
+      if (bodyObj && typeof bodyObj.toText === "function") {
+        body = await bodyObj.toText();
+      }
+
+      // Use in-memory predefined keywords (set by frontend)
+      const patterns: SecretPattern[] = [];
+      for (const k of predefinedKeywords.high) patterns.push({ regex: buildFlexibleRegex(k), severity: "high" });
+      for (const k of predefinedKeywords.medium) patterns.push({ regex: buildFlexibleRegex(k), severity: "medium" });
+      for (const k of predefinedKeywords.low) patterns.push({ regex: buildFlexibleRegex(k), severity: "low" });
+
+      // Fetch critical keywords from SQLite
+      const db = await sdk.meta.db();
+      await db.exec("CREATE TABLE IF NOT EXISTS critical_keywords (keyword TEXT PRIMARY KEY)");
+      const stmt = await db.prepare("SELECT keyword FROM critical_keywords");
+      const rows = await stmt.all();
+      const loadedCritical: string[] = [];
+      for (const row of rows) {
+        const keyword = (row as { keyword?: string }).keyword;
+        if (keyword && typeof keyword === "string" && keyword.trim().length > 0) {
+          patterns.push({
+            regex: buildFlexibleRegex(keyword),
+            severity: "critical",
+          });
+          loadedCritical.push(keyword);
+        }
+      }
+      sdk.console.log(`[Secret Detector] Loaded critical keywords: ${JSON.stringify(loadedCritical)}`);
+
+      const matchesBySeverity: Record<"low" | "medium" | "high" | "critical", string[]> = {
+        low: [],
+        medium: [],
+        high: [],
+        critical: [],
+      };
+
+      for (const { regex, severity } of patterns) {
+        const matches = [...body.matchAll(regex)];
+        for (const m of matches) matchesBySeverity[severity].push(m[0]);
+      }
+
+      for (const severity of ["high", "medium", "low", "critical"] as const) {
+        // Only create findings if severity is enabled
+        if (!enabledSeverities[severity]) continue;
+        const items = matchesBySeverity[severity];
+        if (items.length === 0) continue;
+        const finding = {
+          title: `[${severity.toUpperCase()}] Hardcoded Secrets Found!!`,
+          description:
+            `Potential ${severity}-severity secrets found in response from ${request.getUrl()} (live scan):\n\n` +
+            items.map((v, i) => `${i + 1}. ${v}`).join("\n"),
+          reporter: "Secret Detector",
+          dedupeKey: `${request.getUrl()}-secret-${severity}-live`,
+          request,
+          severity,
+          items,
+          url: request.getUrl(),
+          timestamp: Date.now(),
+        };
+        allFindings.push(finding);
+        await sdk.findings.create(finding);
+      }
+    } catch (err) {
+      sdk.console.warn(`[Secret Detector] Error in onInterceptResponse: ${err}`);
+    }
+  });
+}
