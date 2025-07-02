@@ -26,9 +26,9 @@ A modern, user-friendly Caido plugin to detect hardcoded secrets and sensitive p
   Minimal, Caido-native card-based interface with a FontAwesome sidebar icon.
 
 ## Screenshots
-![ui](https://github.com/user-attachments/assets/c0807449-42c0-4150-a78e-380995b240fd)
+![Image](https://github.com/user-attachments/assets/fb2f87b9-9246-4b6a-8869-1e950085a9a8)
 
-![findings](https://github.com/user-attachments/assets/ce898a7a-3021-4c12-8aa2-ffa29f513b09)
+![Image](https://github.com/user-attachments/assets/62cef335-7793-4bf1-849c-ce7573f22080)
 
 ## Getting Started
 1. **Install the plugin** in Caido.
