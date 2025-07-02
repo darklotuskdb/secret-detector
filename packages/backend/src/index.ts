@@ -17,6 +17,7 @@ export type API = DefineAPI<{
 
 type SecretPattern = {
   regex: RegExp;
+  keyword: string;
 };
 
 // Helper to build a flexible regex for a keyword
@@ -72,8 +73,8 @@ let cachedPatterns: SecretPattern[] = [];
 let cachedCriticalKeywords: string[] = [];
 function rebuildPatternCache(criticalKeywords: string[] = cachedCriticalKeywords) {
   cachedPatterns = [];
-  for (const k of predefinedKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k) });
-  for (const k of criticalKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k) });
+  for (const k of predefinedKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k), keyword: k });
+  for (const k of criticalKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k), keyword: k });
   cachedCriticalKeywords = [...criticalKeywords];
 }
 
@@ -84,6 +85,11 @@ rebuildPatternCache();
 
 // In-memory storage for findings (for export)
 let allFindings: any[] = [];
+
+// In-memory deduplication set for found (keyword, value) (per session)
+const foundKeywordValue = new Set<string>();
+// In-memory deduplication set for host+path (per session)
+const foundHostPath = new Set<string>();
 
 // Global toggle for enabling/disabling the tool
 let toolEnabled = true;
@@ -200,13 +206,7 @@ export function init(sdk: SDK<API>) {
         return { summary: "Search API not available in this SDK version." };
       }
       // For each pattern, search for hits in HTTP traffic
-      for (const { regex } of patterns) {
-        // Extract the keyword from the regex source (best effort, safe)
-        let keyword = "";
-        if (regex && typeof regex.source === "string") {
-          const split = regex.source.split("\\s*");
-          keyword = (split && split[0]) ? split[0].replace(/[\[\]\\]/g, "") : "";
-        }
+      for (const { regex, keyword } of patterns) {
         if (!keyword) continue;
         // Search using the SDK's search API
         let results: any[] = [];
@@ -240,26 +240,40 @@ export function init(sdk: SDK<API>) {
             } catch {}
             // Run the regex pattern on the body
             const matches = [...body.matchAll(regex)].filter(m => {
-              // m[0] is the full match, m[1] is undefined unless regex has groups
-              // Extract the value after := or =,
               const match = m[0];
-              // Try to extract the value part (after := or = and quotes)
               const valueMatch = match.match(/[:=]\s*['\"]([^'\"]+)['\"]/);
-              if (valueMatch && valueMatch[1] && valueMatch[1].length > 5) return true;
+              if (valueMatch && valueMatch[1] && valueMatch[1].length > 5) {
+                const dedupeKey = `${keyword}::${valueMatch[1]}`;
+                if (!foundKeywordValue.has(dedupeKey)) {
+                  foundKeywordValue.add(dedupeKey);
+                  return true;
+                }
+              }
               return false;
             });
             if (matches.length > 0) {
+              // Deduplicate by host+path
+              let hostPath = "";
+              let url = req.getUrl();
+              try {
+                const u = new globalThis.URL(url);
+                hostPath = u.host + u.pathname;
+              } catch {
+                hostPath = url || "";
+              }
+              if (foundHostPath.has(hostPath)) continue;
+              foundHostPath.add(hostPath);
               const items = matches.map(m => m[0]);
               const finding = {
                 title: `[SECRETS] Hardcoded Secrets Found!!`,
                 description:
-                  `Potential secrets found in response from ${req.getUrl()} (search scan):\n\n` +
+                  `Potential secrets found in response from ${url} (search scan):\n\n` +
                   items.map((v, i) => `${i + 1}. ${v}`).join("\n"),
                 reporter: "Secret Detector",
-                dedupeKey: `${req.getUrl()}-secret-search`,
+                dedupeKey: `${url}-secret-search`,
                 request: req,
                 items,
-                url: req.getUrl(),
+                url: url,
                 timestamp: Date.now(),
               };
               allFindings.push(finding);
@@ -303,6 +317,17 @@ export function init(sdk: SDK<API>) {
         if (url && url.endsWith(ext)) { return; }
       }
 
+      // Deduplicate by host+path
+      let hostPath = "";
+      try {
+        const u = new globalThis.URL(rawUrl);
+        hostPath = u.host + u.pathname;
+      } catch {
+        hostPath = rawUrl || "";
+      }
+      if (foundHostPath.has(hostPath)) return;
+      foundHostPath.add(hostPath);
+
       const bodyObj = await response.getBody();
       let body: string = "";
       if (bodyObj && typeof bodyObj.toText === "function") {
@@ -317,8 +342,7 @@ export function init(sdk: SDK<API>) {
         const matches = [...body.matchAll(regex)].filter(m => {
           const match = m[0];
           const valueMatch = match.match(/[:=]\s*['\"]([^'\"]+)['\"]/);
-          if (valueMatch && valueMatch[1] && valueMatch[1].length > 5) return true;
-          return false;
+          return valueMatch && valueMatch[1] && valueMatch[1].length > 5;
         });
         for (const m of matches) found.push(m[0]);
       }

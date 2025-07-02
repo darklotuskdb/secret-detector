@@ -44,12 +44,14 @@ var cachedPatterns = [];
 var cachedCriticalKeywords = [];
 function rebuildPatternCache(criticalKeywords = cachedCriticalKeywords) {
   cachedPatterns = [];
-  for (const k of predefinedKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k) });
-  for (const k of criticalKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k) });
+  for (const k of predefinedKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k), keyword: k });
+  for (const k of criticalKeywords) cachedPatterns.push({ regex: buildFlexibleRegex(k), keyword: k });
   cachedCriticalKeywords = [...criticalKeywords];
 }
 rebuildPatternCache();
 var allFindings = [];
+var foundKeywordValue = /* @__PURE__ */ new Set();
+var foundHostPath = /* @__PURE__ */ new Set();
 var toolEnabled = true;
 var excludedExtensions = [];
 async function loadExcludedExtensions(sdk) {
@@ -138,12 +140,7 @@ function init(sdk) {
         sdk.console.warn("[Secret Detector] Search API is not available in this SDK version.");
         return { summary: "Search API not available in this SDK version." };
       }
-      for (const { regex } of patterns) {
-        let keyword = "";
-        if (regex && typeof regex.source === "string") {
-          const split = regex.source.split("\\s*");
-          keyword = split && split[0] ? split[0].replace(/[\[\]\\]/g, "") : "";
-        }
+      for (const { regex, keyword } of patterns) {
         if (!keyword) continue;
         let results = [];
         try {
@@ -180,21 +177,37 @@ function init(sdk) {
             const matches = [...body.matchAll(regex)].filter((m) => {
               const match = m[0];
               const valueMatch = match.match(/[:=]\s*['\"]([^'\"]+)['\"]/);
-              if (valueMatch && valueMatch[1] && valueMatch[1].length > 5) return true;
+              if (valueMatch && valueMatch[1] && valueMatch[1].length > 5) {
+                const dedupeKey = `${keyword}::${valueMatch[1]}`;
+                if (!foundKeywordValue.has(dedupeKey)) {
+                  foundKeywordValue.add(dedupeKey);
+                  return true;
+                }
+              }
               return false;
             });
             if (matches.length > 0) {
+              let hostPath = "";
+              let url = req.getUrl();
+              try {
+                const u = new globalThis.URL(url);
+                hostPath = u.host + u.pathname;
+              } catch {
+                hostPath = url || "";
+              }
+              if (foundHostPath.has(hostPath)) continue;
+              foundHostPath.add(hostPath);
               const items = matches.map((m) => m[0]);
               const finding = {
                 title: `[SECRETS] Hardcoded Secrets Found!!`,
-                description: `Potential secrets found in response from ${req.getUrl()} (search scan):
+                description: `Potential secrets found in response from ${url} (search scan):
 
 ` + items.map((v, i) => `${i + 1}. ${v}`).join("\n"),
                 reporter: "Secret Detector",
-                dedupeKey: `${req.getUrl()}-secret-search`,
+                dedupeKey: `${url}-secret-search`,
                 request: req,
                 items,
-                url: req.getUrl(),
+                url,
                 timestamp: Date.now()
               };
               allFindings.push(finding);
@@ -231,6 +244,15 @@ function init(sdk) {
           return;
         }
       }
+      let hostPath = "";
+      try {
+        const u = new globalThis.URL(rawUrl);
+        hostPath = u.host + u.pathname;
+      } catch {
+        hostPath = rawUrl || "";
+      }
+      if (foundHostPath.has(hostPath)) return;
+      foundHostPath.add(hostPath);
       const bodyObj = await response.getBody();
       let body = "";
       if (bodyObj && typeof bodyObj.toText === "function") {
@@ -242,8 +264,7 @@ function init(sdk) {
         const matches = [...body.matchAll(regex)].filter((m) => {
           const match = m[0];
           const valueMatch = match.match(/[:=]\s*['\"]([^'\"]+)['\"]/);
-          if (valueMatch && valueMatch[1] && valueMatch[1].length > 5) return true;
-          return false;
+          return valueMatch && valueMatch[1] && valueMatch[1].length > 5;
         });
         for (const m of matches) found.push(m[0]);
       }
