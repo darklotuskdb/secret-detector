@@ -12,7 +12,7 @@ export default defineConfig({
   id,
   name: "Secret Detector",
   description: "Detects hardcoded secrets and custom patterns in HTTP responses. Supports user-defined keywords and severity levels.",
-  version: "1.0.0",
+  version: "1.0.1",
   author: {
     name: "DarkLotusKDB",
     email: "kamaldeepbhati23@gmail.com",
